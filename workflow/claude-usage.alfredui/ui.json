@@ -1,0 +1,115 @@
+{
+  "bundleid": "dev.claude-usage.alfred",
+  "variablesconfig": {
+    "range": {
+      "default": "7d",
+      "persist": true,
+      "scriptenv": true
+    },
+    "metric": {
+      "default": "cost",
+      "persist": true,
+      "scriptenv": true
+    }
+  },
+  "pulse": {
+    "src": "scripts/dashboard",
+    "args": [
+      "pulse",
+      "{var:range}",
+      "{var:metric}"
+    ],
+    "interval": 30,
+    "intervalmode": "delay"
+  },
+  "log": {
+    "level": "error",
+    "internal": true
+  },
+  "window": {
+    "id": "mainWindow",
+    "title": "Claude Usage",
+    "blur": true,
+    "size": {
+      "width": 1000,
+      "height": 780
+    },
+    "minsize": {
+      "width": 1000,
+      "height": 780
+    },
+    "fullsizecontentview": true,
+    "titlebarappearstransparent": true,
+    "titlevisibility": false,
+    "movablebybackground": true,
+    "frameautosave": true,
+    "root": {
+      "type": "view",
+      "layout": "stack",
+      "shortcuts": [
+        {
+          "shortcut": "⎋",
+          "action": {
+            "type": "function",
+            "src": "mainWindow",
+            "args": "close"
+          }
+        },
+        {
+          "shortcut": "⌘W",
+          "action": {
+            "type": "function",
+            "src": "mainWindow",
+            "args": "close"
+          }
+        }
+      ],
+      "events": [
+        {
+          "triggers": "launched",
+          "action": [
+            {
+              "type": "script",
+              "src": "scripts/dashboard",
+              "args": [
+                "render",
+                "{var:range}",
+                "{var:metric}"
+              ]
+            },
+            {
+              "type": "script",
+              "src": "scripts/dashboard",
+              "args": [
+                "refresh",
+                "{var:range}",
+                "{var:metric}"
+              ],
+              "async": true
+            }
+          ]
+        }
+      ],
+      "components": [
+        {
+          "id": "content",
+          "type": "view",
+          "layout": "stack",
+          "padding": 0,
+          "components": [
+            {
+              "type": "label",
+              "text": "Loading…",
+              "textalign": "centre",
+              "colour": "secondaryLabelColor",
+              "constraints": {
+                "position": "centre"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "resizeable": false
+  }
+}

@@ -1,0 +1,607 @@
+#!/usr/bin/env python3
+"""Claude Usage dashboard renderer for Alfred UI.
+
+Usage: dashboard <render|refresh> <range: today|7d|30d|all> [metric: cost|tokens]
+
+Prints Alfred UI "JSON actions" that rebuild the dashboard inside the
+`content` view. `refresh` first indexes any new transcript bytes.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+import traceback
+from collections import defaultdict
+from datetime import datetime, timedelta
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import engine  # noqa: E402
+
+# ---------------------------------------------------------------- palette
+ORANGE = "#D97757"
+BLUE = "#6A9BCC"
+GREEN = "#788C5D"
+PURPLE = "#B08FD8"
+GREY = "#9A978E"
+FAMILY_COLOUR = {"opus": ORANGE, "sonnet": BLUE, "haiku": GREEN, "fable": PURPLE}
+CARD_BG = "rgb(128,128,128,0.10)"
+CARD_EDGE = "rgb(128,128,128,0.16)"
+TRACK = "rgb(128,128,128,0.18)"
+EMPTY_CELL = "rgb(128,128,128,0.10)"
+
+PRIMARY = "labelColor"
+SECONDARY = "secondaryLabelColor"
+TERTIARY = "tertiaryLabelColor"
+
+RANGES = [("today", "Today"), ("7d", "7 days"), ("30d", "30 days"), ("all", "All time")]
+RANGE_TITLE = {"today": "today", "7d": "last 7 days", "30d": "last 30 days", "all": "all time"}
+
+
+# ---------------------------------------------------------------- formatting
+def fmt_tokens(n):
+    n = float(n)
+    for unit, div in (("B", 1e9), ("M", 1e6), ("K", 1e3)):
+        if n >= div:
+            v = n / div
+            return ("%.2f%s" if v < 10 else "%.1f%s" if v < 100 else "%.0f%s") % (v, unit)
+    return "%d" % n
+
+
+def fmt_cost(c):
+    if c >= 10000:
+        return "$%.1fK" % (c / 1000)
+    if c >= 1000:
+        return "${:,.0f}".format(c)
+    if c >= 100:
+        return "$%.0f" % c
+    return "$%.2f" % c
+
+
+def fmt_int(n):
+    return "{:,}".format(int(n))
+
+
+def fmt_dur(sec):
+    sec = int(max(sec, 0))
+    h, m = sec // 3600, (sec % 3600) // 60
+    return "%dh %02dm" % (h, m) if h else "%dm" % m
+
+
+def pct_delta(cur, prev):
+    if not prev:
+        return None
+    return (cur - prev) / prev * 100.0
+
+
+# ---------------------------------------------------------------- component helpers
+def label(text, size="default", weight="regular", colour=PRIMARY, align=None, mono=None,
+          constraints=None, id=None, linebreak=None, tooltip=None):
+    font = {"size": size, "weight": weight}
+    if mono:
+        font["monospaced"] = mono
+    c = {"type": "label", "text": text, "colour": colour, "font": font}
+    if align:
+        c["textalign"] = align
+    if constraints:
+        c["constraints"] = constraints
+    if id:
+        c["id"] = id
+    if linebreak:
+        c["linebreak"] = linebreak
+    if tooltip:
+        c["tooltip"] = tooltip
+    return c
+
+
+def symbol(name, tint, px=16, constraints=None):
+    c = {"type": "imageview", "contenttintcolour": tint, "resize": "fit",
+         "image": {"type": "symbol", "src": name, "size": {"width": px, "height": px}},
+         "constraints": dict({"size": {"width": px + 2, "height": px + 2}}, **(constraints or {}))}
+    return c
+
+
+def vstack(components, spacing=0, padding=0, constraints=None, **kw):
+    c = {"type": "view", "layout": "inline", "direction": "vertical",
+         "spacing": spacing, "padding": padding, "components": components}
+    if constraints:
+        c["constraints"] = constraints
+    c.update(kw)
+    return c
+
+
+def hstack(components, spacing=0, padding=0, constraints=None, **kw):
+    c = {"type": "view", "layout": "inline", "direction": "horizontal",
+         "spacing": spacing, "padding": padding, "components": components}
+    if constraints:
+        c["constraints"] = constraints
+    c.update(kw)
+    return c
+
+
+def box(colour, constraints=None, radius=0, tooltip=None, **kw):
+    c = {"type": "view", "layout": "stack", "background": colour, "cornerradius": radius}
+    if constraints:
+        c["constraints"] = constraints
+    if tooltip:
+        c["tooltip"] = tooltip
+    c.update(kw)
+    return c
+
+
+def card(title, icon, tint, body, constraints=None, trailing=None):
+    head = [symbol(icon, tint, 14),
+            label(title.upper(), "small", "semibold", SECONDARY, constraints={"insets": {"left": 4}})]
+    top = hstack(head, spacing=2, constraints={"region": "left"})
+    top_row = {"type": "view", "layout": "border", "constraints": {"region": "top"},
+               "components": [top] + ([dict(trailing, constraints={"region": "right"})] if trailing else [])}
+    c = {"type": "view", "layout": "border", "padding": 14, "spacing": 10,
+         "cornerradius": 14, "background": CARD_BG,
+         "border": {"width": 1, "colour": CARD_EDGE},
+         "components": [top_row, dict(body, constraints=dict(body.get("constraints", {}), region="centre"))]}
+    if constraints:
+        c["constraints"] = constraints
+    return c
+
+
+def bar(frac, colour, thickness=6):
+    return {"type": "progress", "style": "linear", "thickness": thickness,
+            "progress": max(0.0, min(1.0, frac)), "colour": colour, "background": TRACK}
+
+
+def script_action(*args):
+    return {"type": "script", "src": "scripts/dashboard", "args": list(args)}
+
+
+def pill_button(text, active, action, tooltip=None, symbol_name=None, shortcut=None):
+    b = {"type": "button", "text": text, "bordered": bool(active),
+         "bordershape": "capsule", "effect": "glass" if active else "default",
+         "font": {"size": "small", "weight": "semibold" if active else "medium"},
+         "events": [{"triggers": "actioned", "action": action}]}
+    if not active:
+        b["contenttintcolour"] = SECONDARY
+    b["constraints"] = {"size": {"height": 26}, "position": "centre"}
+    if tooltip:
+        b["tooltip"] = tooltip
+    if shortcut:
+        b["shortcut"] = shortcut
+    return b
+
+
+# ---------------------------------------------------------------- data shaping
+def family_of(model):
+    return engine.model_key(model)[0]
+
+
+def bucketise(rows, key, now):
+    """Return (buckets, labels, tooltips_titles): ordered buckets, each dict fam->(cost,tokens)."""
+    today = now.date()
+    buckets = []  # list of (title, label, match)
+    if key == "today":
+        for h in range(24):
+            buckets.append(("%02d:00" % h, str(h) if h % 3 == 0 else "", ("hour", h)))
+    elif key in ("7d", "30d"):
+        n = 7 if key == "7d" else 30
+        for i in range(n - 1, -1, -1):
+            d = today - timedelta(days=i)
+            day = d.strftime("%Y-%m-%d")
+            title = d.strftime("%a %-d %b")
+            if key == "7d":
+                lab = d.strftime("%a")
+            else:
+                lab = ""
+                if i % 5 == 0:
+                    lab = d.strftime("%b") if d.day == 1 else str(d.day)
+            buckets.append((title, lab, ("day", day)))
+    else:
+        # weekly buckets (Monday start), up to the last 26 weeks
+        monday = today - timedelta(days=today.weekday())
+        first = min((r.day for r in rows), default=today.strftime("%Y-%m-%d"))
+        first_d = datetime.strptime(first, "%Y-%m-%d").date()
+        weeks = max(1, min(26, ((monday - (first_d - timedelta(days=first_d.weekday()))).days // 7) + 1))
+        prev_month = None
+        for i in range(weeks - 1, -1, -1):
+            d0 = monday - timedelta(weeks=i)
+            d1 = d0 + timedelta(days=6)
+            lab = ""
+            if d0.month != prev_month:
+                lab = d0.strftime("%b")
+                prev_month = d0.month
+            buckets.append(("Week of " + d0.strftime("%-d %b"), lab,
+                            ("range", d0.strftime("%Y-%m-%d"), d1.strftime("%Y-%m-%d"))))
+    data = [defaultdict(lambda: [0.0, 0]) for _ in buckets]
+    for r in rows:
+        for i, (_, _, m) in enumerate(buckets):
+            hit = ((m[0] == "hour" and r.hour == m[1] and r.day == today.strftime("%Y-%m-%d")) or
+                   (m[0] == "day" and r.day == m[1]) or
+                   (m[0] == "range" and m[1] <= r.day <= m[2]))
+            if hit:
+                a = data[i][family_of(r.model)]
+                a[0] += r.cost
+                a[1] += r.inp + r.out + r.cr + r.cw
+                break
+    return buckets, data
+
+
+# ---------------------------------------------------------------- sections
+def header(range_key, metric, updated, n_msgs, indexing):
+    left = hstack([
+        {"type": "view", "layout": "stack", "background": ORANGE, "cornerradius": 9,
+         "constraints": {"size": {"width": 34, "height": 34}, "insets": {"right": 10}, "position": "centre"},
+         "components": [symbol("sparkle", "White", 18, {"position": "centre"})]},
+        vstack([
+            label("Claude Usage", 20, "bold", PRIMARY),
+            label(("Indexing transcripts…" if indexing else
+                   "Updated %s  ·  %s API calls from Claude Code" % (updated, fmt_int(n_msgs))),
+                  "small", "regular", SECONDARY),
+        ], spacing=0),
+    ], spacing=0, constraints={"region": "left"})
+
+    seg = [pill_button(t, k == range_key, script_action("render", k, metric), shortcut="⌘%d" % (i + 1))
+           for i, (k, t) in enumerate(RANGES)]
+    metric_btns = [
+        pill_button("Cost", metric == "cost", script_action("render", range_key, "cost")),
+        pill_button("Tokens", metric == "tokens", script_action("render", range_key, "tokens")),
+    ]
+    refresh = {"type": "button", "bordered": False, "tooltip": "Refresh now (⌘R)", "shortcut": "⌘R", "constraints": {"position": "centre"},
+               "image": {"type": "symbol", "src": "arrow.clockwise"}, "contenttintcolour": SECONDARY,
+               "events": [{"triggers": "actioned", "action": script_action("refresh", range_key, metric)}]}
+    right = hstack(seg + [label("", constraints={"size": {"width": 8}})] + metric_btns + [refresh],
+                   spacing=4, constraints={"region": "right"})
+    return {"type": "view", "layout": "border", "constraints": {"region": "top", "size": {"height": 56}, "insets": {"top": 12}},
+            "components": [left, right]}
+
+
+def kpi_row(cur, prev, prev_label, range_key):
+    def tile(title, icon, tint, value, sub, delta=None):
+        rows = [label(value, 28, "bold", PRIMARY, mono="digits"),
+                label(sub, "small", "regular", SECONDARY)]
+        trailing = None
+        if delta is not None:
+            up = delta >= 0
+            txt = ("▲ %.0f×" % (1 + delta / 100.0)) if delta >= 500 else "%s %.0f%%" % ("▲" if up else "▼", abs(delta))
+            trailing = label(txt, "small", "bold",
+                             ORANGE if up else GREEN, tooltip="vs %s" % prev_label)
+        return card(title, icon, tint, vstack(rows, spacing=1, constraints={"position": "left"}), trailing=trailing)
+
+    cost_d = pct_delta(cur["cost"], prev["cost"]) if prev else None
+    tok_d = pct_delta(cur["tokens"], prev["tokens"]) if prev else None
+    msg_d = pct_delta(cur["msgs"], prev["msgs"]) if prev else None
+    tiles = [
+        tile("Est. cost", "dollarsign.circle.fill", ORANGE, fmt_cost(cur["cost"]),
+             "%s / active day" % fmt_cost(cur["cost"] / max(cur["days"], 1)), cost_d),
+        tile("Tokens", "textformat.123", BLUE, fmt_tokens(cur["tokens"]),
+             "%s output" % fmt_tokens(cur["out"]), tok_d),
+        tile("Messages", "bubble.left.and.text.bubble.right.fill", GREEN, fmt_int(cur["msgs"]),
+             "%s sessions" % fmt_int(cur["sessions"]), msg_d),
+        tile("Cache hit rate", "bolt.fill", PURPLE, "%.1f%%" % (cur["hit"] * 100),
+             "saved about %s" % fmt_cost(cur["saved"])),
+    ]
+    return {"type": "view", "layout": "grid", "rows": 1, "cols": 4, "spacing": 12,
+            "constraints": {"region": "top", "size": {"height": 104}}, "components": tiles}
+
+
+CHART_W = 500   # plot width in px (card width minus padding at the fixed window size)
+
+
+def chart_card(rows, range_key, metric, now):
+    buckets, data = bucketise(rows, range_key, now)
+    idx = 0 if metric == "cost" else 1
+    totals_ = [sum(v[idx] for v in d.values()) for d in data]
+    peak = max(totals_) if totals_ and max(totals_) > 0 else 1.0
+    CH = 166  # chart plot height in px
+    order = ["opus", "sonnet", "haiku", "fable"]
+    cols = []
+    raw_labels = []
+    for (title, lab, _), d, tot in zip(buckets, data, totals_):
+        segs = []
+        if tot > 0:
+            total_px = max(2, int(round(CH * tot / peak)))
+            remaining = total_px
+            fams = [f for f in order if f in d] + [f for f in d if f not in order]
+            for j, f in enumerate(fams):
+                h = int(round(total_px * d[f][idx] / tot)) if j < len(fams) - 1 else remaining
+                h = max(h, 1)
+                remaining -= h
+                segs.append(box(FAMILY_COLOUR.get(f, GREY), constraints={"size": {"height": h}}))
+        tip = "%s\n%s  ·  %s tokens" % (title, fmt_cost(sum(v[0] for v in d.values())),
+                                       fmt_tokens(sum(v[1] for v in d.values())))
+        if segs:
+            stack = {"type": "view", "layout": "inline", "direction": "vertical", "spacing": 0,
+                     "cornerradius": 3, "cliptobounds": True, "tooltip": tip,
+                     "constraints": {"region": "bottom", "insets": {"left": 2, "right": 2}},
+                     "components": list(reversed(segs))}
+        else:
+            stack = box(TRACK, constraints={"region": "bottom", "size": {"height": 2},
+                                           "insets": {"left": 2, "right": 2}}, radius=1, tooltip=tip)
+        cols.append({"type": "view", "layout": "border", "components": [stack]})
+        raw_labels.append(lab)
+    n = len(cols)
+    pitch = max(CHART_W // n, 2)
+    lead = (CHART_W - pitch * n) // 2
+    gap = 2 if pitch >= 14 else 1
+    for c in cols:
+        c["constraints"] = {"size": {"width": pitch}}
+        for ch in c["components"]:
+            ch["constraints"] = dict(ch.get("constraints", {}), insets={"left": gap, "right": gap})
+    plot = {"type": "view", "layout": "inline", "direction": "horizontal", "spacing": 0,
+            "constraints": {"region": "centre", "insets": {"left": lead}}, "components": cols}
+    marks = [i for i, t in enumerate(raw_labels) if t]
+    segs = []
+    if marks:
+        if marks[0] > 0:
+            segs.append(label("", "small", constraints={"size": {"width": pitch * marks[0]}}))
+        for j, i in enumerate(marks):
+            span = (marks[j + 1] if j + 1 < len(marks) else n) - i
+            segs.append(label(raw_labels[i], 9, "medium", TERTIARY,
+                              align="centre" if range_key == "7d" else "left",
+                              linebreak="clip", constraints={"size": {"width": pitch * span}}))
+    axis = {"type": "view", "layout": "inline", "direction": "horizontal", "spacing": 0,
+            "constraints": {"region": "bottom", "size": {"height": 14}, "insets": {"left": lead}},
+            "components": segs}
+    peak_label = label("peak " + (fmt_cost(peak) if metric == "cost" else fmt_tokens(peak)),
+                       "small", "medium", TERTIARY, constraints={"region": "top"})
+    legend = hstack([
+        hstack([box(c, constraints={"size": {"width": 8, "height": 8}, "insets": {"right": 4, "top": 3}}, radius=4),
+                label(n_, "small", "medium", SECONDARY, constraints={"insets": {"right": 10}})], spacing=0)
+        for n_, c in (("Opus", ORANGE), ("Sonnet", BLUE), ("Haiku", GREEN), ("Fable", PURPLE))
+    ], spacing=0, constraints={"region": "right"})
+    body = {"type": "view", "layout": "border", "spacing": 4, "components": [
+        {"type": "view", "layout": "border", "constraints": {"region": "top"}, "components": [
+            dict(peak_label, constraints={"region": "left"}), legend]},
+        plot, axis]}
+    title = ("Spend" if metric == "cost" else "Tokens") + " over time"
+    return card(title, "chart.bar.xaxis", ORANGE, body)
+
+
+def models_card(rows, metric):
+    by = defaultdict(lambda: [0.0, 0])
+    for r in rows:
+        a = by[engine.model_label(r.model)]
+        a[0] += r.cost
+        a[1] += r.inp + r.out + r.cr + r.cw
+    idx = 0 if metric == "cost" else 1
+    items = sorted(by.items(), key=lambda kv: -kv[1][idx])
+    total = sum(v[idx] for _, v in items) or 1.0
+    top = items[:3]
+    rest = items[3:]
+    if rest:
+        top.append(("Other", [sum(v[0] for _, v in rest), sum(v[1] for _, v in rest)]))
+    out = []
+    for name, v in top:
+        fam = name.split()[0].lower()
+        colour = FAMILY_COLOUR.get(fam, GREY)
+        share = v[idx] / total
+        val = fmt_cost(v[0]) if metric == "cost" else fmt_tokens(v[1])
+        out.append(vstack([
+            {"type": "view", "layout": "border", "components": [
+                hstack([box(colour, constraints={"size": {"width": 8, "height": 8}, "insets": {"right": 6, "top": 3}}, radius=4),
+                        label(name, "default", "medium", PRIMARY)], spacing=0, constraints={"region": "left"}),
+                hstack([label(val, "default", "semibold", PRIMARY, mono="digits"),
+                        label("  %d%%" % round(share * 100), "small", "regular", SECONDARY, mono="digits",
+                              constraints={"size": {"width": 42}})], spacing=0, constraints={"region": "right"}),
+            ]},
+            bar(share, colour),
+        ], spacing=3))
+    if not out:
+        out = [label("No usage in this range", "default", "regular", SECONDARY, constraints={"position": "centre"})]
+    # where the money / tokens go, by token type
+    parts = [0.0, 0.0, 0.0, 0.0]
+    toks = [0, 0, 0, 0]
+    for r in rows:
+        for i in range(4):
+            parts[i] += r.parts[i]
+        toks[0] += r.inp
+        toks[1] += r.out
+        toks[2] += r.cr
+        toks[3] += r.cw
+    vals = parts if metric == "cost" else toks
+    tot = float(sum(vals)) or 1.0
+    names = ["Input", "Output", "Cache read", "Cache write"]
+    cols = [BLUE, ORANGE, PURPLE, GREEN]
+    BAR_W = 392  # model card inner width at the fixed window size
+    seg_views = []
+    for v, c, nm in zip(vals, cols, names):
+        px = int(round(BAR_W * v / tot))
+        if px > 0:
+            seg_views.append(box(c, constraints={"size": {"width": max(px, 3), "height": 10}}, tooltip=nm))
+    stacked = {"type": "view", "layout": "inline", "direction": "horizontal", "spacing": 1,
+               "cornerradius": 5, "cliptobounds": True,
+               "constraints": {"size": {"height": 10}}, "components": seg_views}
+    legend_cells = []
+    for v, c, nm in zip(vals, cols, names):
+        txt = fmt_cost(v) if metric == "cost" else fmt_tokens(v)
+        legend_cells.append(hstack([
+            box(c, constraints={"size": {"width": 7, "height": 7}, "insets": {"right": 5, "top": 4}}, radius=4),
+            label(nm + "  ", "small", "medium", SECONDARY),
+            label(txt, "small", "semibold", PRIMARY, mono="digits"),
+        ], spacing=0))
+    legend = {"type": "view", "layout": "grid", "rows": 2, "cols": 2, "spacing": 2,
+              "constraints": {"size": {"height": 36}}, "components": [dict(c, constraints={"position": "left"}) for c in legend_cells]}
+    breakdown = vstack([
+        label(("WHERE THE COST GOES" if metric == "cost" else "WHERE THE TOKENS GO"), 9, "semibold", TERTIARY),
+        stacked, legend], spacing=4, constraints={"region": "bottom"})
+    body = {"type": "view", "layout": "border", "spacing": 8, "components": [
+        vstack(out, spacing=9, constraints={"region": "top", "stretch": "horizontal"}),
+        breakdown]}
+    return card("Model mix", "cpu", BLUE, body)
+
+
+def block_card(block, now):
+    if block and block["active"]:
+        frac = block["elapsed"] / (5 * 3600.0)
+        remaining = fmt_dur(block["end"] - now)
+        centre_big, centre_small = remaining, "left in block"
+        colour = ORANGE if frac < 0.8 else "#C46686"
+        hours = max(block["elapsed"] / 3600.0, 0.05)
+        stats = [
+            ("Cost", fmt_cost(block["cost"])), ("Tokens", fmt_tokens(block["tokens"])),
+            ("Messages", fmt_int(block["msgs"])), ("Burn", "%s/h" % fmt_cost(block["cost"] / hours)),
+        ]
+        sub = "Started %s" % datetime.fromtimestamp(block["start"]).strftime("%-I:%M %p")
+    else:
+        frac = 0.0
+        colour = GREEN
+        centre_big, centre_small = "Idle", ("last used %s ago" % fmt_dur(now - block["last"])) if block else "no recent use"
+        stats = [("Cost", "–"), ("Tokens", "–"), ("Messages", "–"), ("Burn", "–")]
+        sub = "No active 5-hour block"
+    ring = {"type": "progress", "style": "round", "thickness": 9, "progress": frac,
+            "colour": colour, "background": TRACK,
+            "constraints": {"position": "centre", "size": {"width": 104, "height": 104}}}
+    ring_stack = {"type": "view", "layout": "stack", "constraints": {"region": "left", "size": {"width": 112, "height": 112}},
+                  "components": [ring,
+                                 vstack([label(centre_big, 17, "bold", PRIMARY, align="centre", mono="digits"),
+                                         label(centre_small, 9, "medium", SECONDARY, align="centre")],
+                                        spacing=0, constraints={"position": "centre"})]}
+    stat_views = [vstack([label(k.upper(), 9, "semibold", TERTIARY), label(v, 15, "semibold", PRIMARY, mono="digits")], spacing=0)
+                  for k, v in stats]
+    grid = {"type": "view", "layout": "grid", "rows": 2, "cols": 2, "spacing": 6,
+            "constraints": {"region": "centre", "insets": {"left": 14}}, "components": stat_views}
+    body = {"type": "view", "layout": "border", "spacing": 6, "components": [
+        {"type": "view", "layout": "border", "constraints": {"region": "centre"}, "components": [ring_stack, grid]},
+        label(sub, "small", "regular", SECONDARY, constraints={"region": "bottom"}),
+    ]}
+    return card("5-hour block", "timer", ORANGE, body)
+
+
+def projects_card(rows, metric):
+    by = defaultdict(lambda: [0.0, 0])
+    for r in rows:
+        a = by[r.project]
+        a[0] += r.cost
+        a[1] += r.inp + r.out + r.cr + r.cw
+    idx = 0 if metric == "cost" else 1
+    items = sorted(by.items(), key=lambda kv: -kv[1][idx])[:5]
+    top_v = items[0][1][idx] if items else 1.0
+    out = []
+    for i, (name, v) in enumerate(items):
+        val = fmt_cost(v[0]) if metric == "cost" else fmt_tokens(v[1])
+        nm = name if len(name) <= 26 else name[:25] + "…"
+        out.append(vstack([
+            {"type": "view", "layout": "border", "components": [
+                label(nm, "default", "medium", PRIMARY, constraints={"region": "left"}, tooltip=name),
+                label(val, "default", "semibold", PRIMARY, mono="digits", constraints={"region": "right"})]},
+            bar(v[idx] / top_v if top_v else 0, ORANGE if i == 0 else "rgb(217,119,87,%.2f)" % max(0.35, 0.8 - i * 0.12), 5),
+        ], spacing=3))
+    if not out:
+        out = [label("No projects yet", "default", "regular", SECONDARY, constraints={"position": "centre"})]
+    return card("Top projects", "folder.fill", GREEN, vstack(out, spacing=5, constraints={"position": "top", "stretch": "horizontal"}))
+
+
+def heatmap_card(rows_all, now):
+    cutoff = (now.date() - timedelta(days=29)).strftime("%Y-%m-%d")
+    counts = defaultdict(int)
+    for r in rows_all:
+        if r.day >= cutoff:
+            counts[(r.dow, r.hour)] += 1
+    mx = max(counts.values()) if counts else 1
+    cells = []
+    for d in range(7):
+        for h in range(24):
+            c = counts.get((d, h), 0)
+            if c:
+                a = 0.14 + 0.86 * (c / mx) ** 0.55
+                colour = "rgb(217,119,87,%.2f)" % a
+            else:
+                colour = EMPTY_CELL
+            cells.append(box(colour, constraints={"insets": {"left": 1, "right": 1, "top": 1, "bottom": 1}},
+                             radius=2, tooltip="%s %02d:00  ·  %d calls" % (
+                                 ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][d], h, c)))
+    grid = {"type": "view", "layout": "grid", "rows": 7, "cols": 24, "spacing": 0,
+            "constraints": {"region": "centre"}, "components": cells}
+    days = {"type": "view", "layout": "grid", "rows": 7, "cols": 1,
+            "constraints": {"region": "left", "size": {"width": 12}},
+            "components": [label(x, 9, "medium", TERTIARY, align="centre") for x in "MTWTFSS"]}
+    hours = {"type": "view", "layout": "grid", "rows": 1, "cols": 24,
+             "constraints": {"region": "bottom", "size": {"height": 12}},
+             "components": [label(str(h) if h % 6 == 0 else "", 9, "medium", TERTIARY, align="left", linebreak="clip")
+                            for h in range(24)]}
+    body = {"type": "view", "layout": "border", "spacing": 2, "components": [grid, days, hours]}
+    return card("Activity · 30 days", "calendar", PURPLE, body)
+
+
+def footer(text):
+    return label(text, "small", "regular", TERTIARY, align="centre", constraints={"region": "bottom"})
+
+
+# ---------------------------------------------------------------- page assembly
+def build_page(db, range_key, metric, indexing=False):
+    now_dt = datetime.now()
+    now = time.time()
+    s, e, ps, pe, prev_label = engine.range_bounds(range_key, now_dt.date())
+    all_rows = engine.load_rows(db, (now_dt.date() - timedelta(days=60)).strftime("%Y-%m-%d") if range_key != "all" else None)
+    rows = [r for r in all_rows if (not s or r.day >= s) and r.day <= e]
+    prev_rows = [r for r in all_rows if ps and ps <= r.day <= pe]
+    cur = engine.totals(rows)
+    prev = engine.totals(prev_rows) if ps else None
+    total_msgs = db.execute("SELECT COUNT(*) FROM msgs").fetchone()[0]
+
+    page_body = {"type": "view", "layout": "border", "spacing": 12, "constraints": {"region": "centre"}, "components": [
+        kpi_row(cur, prev, prev_label, range_key),
+        {"type": "view", "layout": "border", "spacing": 12, "constraints": {"region": "centre"}, "components": [
+            dict(chart_card(rows, range_key, metric, now_dt), constraints={"region": "centre"}),
+            dict(models_card(rows, metric), constraints={"region": "right", "size": {"width": 420}}),
+        ]},
+        {"type": "view", "layout": "grid", "rows": 1, "cols": 3, "spacing": 12,
+         "constraints": {"region": "bottom", "size": {"height": 214}},
+         "components": [
+             block_card(engine.current_block(db, now), now),
+             projects_card(rows, metric),
+             heatmap_card(all_rows if range_key != "all" else all_rows, now_dt),
+         ]},
+    ]}
+    updated = now_dt.strftime("%-I:%M:%S %p")
+    return {"type": "view", "layout": "border", "spacing": 12, "padding": 20, "components": [
+        header(range_key, metric, updated, total_msgs, indexing),
+        page_body,
+        footer("Costs are API-equivalent list-price estimates from your local Claude Code transcripts  ·  "
+               "⌘1-4 range  ·  ⌘R refresh  ·  esc close"),
+    ]}
+
+
+def splash(text, sub=""):
+    return {"type": "view", "layout": "stack", "constraints": {"position": "centre"}, "components": [
+        vstack([
+            symbol("sparkle", ORANGE, 40, {"position": "centre"}),
+            label(text, 18, "bold", PRIMARY, align="centre", constraints={"insets": {"top": 10}}),
+            label(sub, "default", "regular", SECONDARY, align="centre", constraints={"insets": {"top": 4}}),
+        ], spacing=0, constraints={"position": "centre"})]}
+
+
+def emit(view, range_key, metric):
+    out = {
+        "variables": {"range": range_key, "metric": metric},
+        "update": {"relayout": True, "ids": {"content": {"components": [view]}}},
+    }
+    sys.stdout.write(json.dumps(out))
+
+
+def main():
+    mode = sys.argv[1] if len(sys.argv) > 1 else "render"
+    range_key = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] in dict(RANGES) else "7d"
+    metric = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] in ("cost", "tokens") else "cost"
+    try:
+        db = engine.connect()
+        has_data = db.execute("SELECT 1 FROM msgs LIMIT 1").fetchone() is not None
+        if mode in ("refresh", "pulse"):
+            engine.index(db)
+            has_data = db.execute("SELECT 1 FROM msgs LIMIT 1").fetchone() is not None
+        if not has_data:
+            if mode == "render":
+                emit(splash("Indexing your Claude history…",
+                            "First run reads every transcript once. This takes about 15 seconds."),
+                     range_key, metric)
+            else:
+                emit(splash("No Claude Code usage found",
+                            "Looked in ~/.claude/projects. Use Claude Code once, then press ⌘R."),
+                     range_key, metric)
+            return
+        emit(build_page(db, range_key, metric), range_key, metric)
+    except Exception:
+        emit(splash("Something went wrong", traceback.format_exc().strip().splitlines()[-1]), range_key, metric)
+        sys.stderr.write(traceback.format_exc())
+
+
+if __name__ == "__main__":
+    main()

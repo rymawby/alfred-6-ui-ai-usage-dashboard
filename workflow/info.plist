@@ -1,0 +1,235 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>bundleid</key>
+	<string>dev.claude-usage.alfred</string>
+	<key>name</key>
+	<string>Claude Usage</string>
+	<key>description</key>
+	<string>Your Claude Code usage as a native Alfred UI dashboard</string>
+	<key>category</key>
+	<string>Productivity</string>
+	<key>createdby</key>
+	<string></string>
+	<key>webaddress</key>
+	<string></string>
+	<key>version</key>
+	<string>1.0.0</string>
+	<key>disabled</key>
+	<false/>
+	<key>readme</key>
+	<string># Claude Usage
+
+A native Alfred UI dashboard for your Claude Code usage.
+
+Type the keyword (default `claude`) to open it. It shows spend, tokens, messages,
+cache efficiency, a stacked time chart by model family, model mix, your current
+5-hour block, top projects and a weekly activity heatmap.
+
+## Data
+Everything is read locally from `~/.claude/projects/**/*.jsonl` (also honours
+`CLAUDE_CONFIG_DIR`). Nothing leaves your machine. The first launch indexes
+your history once (about 15 seconds for 2 GB); after that only new bytes are read.
+
+Costs are API-equivalent estimates at Anthropic list prices. If you are on a
+subscription this is the value of your usage, not what you were billed.
+
+## Controls
+- `1` to `4` with Cmd: Today / 7 days / 30 days / All time
+- Cmd+R: refresh now (it also refreshes every 30 seconds)
+- Esc: close
+
+## Other ways in
+- Set a hotkey on the unassigned Hotkey object.
+- External trigger `dashboard`:
+  `tell application id "com.runningwithcrayons.Alfred" to run trigger "dashboard" in workflow "dev.claude-usage.alfred"`
+</string>
+	<key>connections</key>
+	<dict>
+		<key>5C2B8E0A-3F59-4E2B-9E57-0D6B7A1C4A01</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>5C2B8E0A-3F59-4E2B-9E57-0D6B7A1C4A04</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+		<key>5C2B8E0A-3F59-4E2B-9E57-0D6B7A1C4A02</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>5C2B8E0A-3F59-4E2B-9E57-0D6B7A1C4A04</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+		<key>5C2B8E0A-3F59-4E2B-9E57-0D6B7A1C4A03</key>
+		<array>
+			<dict>
+				<key>destinationuid</key>
+				<string>5C2B8E0A-3F59-4E2B-9E57-0D6B7A1C4A04</string>
+				<key>modifiers</key>
+				<integer>0</integer>
+				<key>modifiersubtext</key>
+				<string></string>
+				<key>vitoclose</key>
+				<false/>
+			</dict>
+		</array>
+	</dict>
+	<key>objects</key>
+	<array>
+		<dict>
+			<key>type</key>
+			<string>alfred.workflow.input.keyword</string>
+			<key>uid</key>
+			<string>5C2B8E0A-3F59-4E2B-9E57-0D6B7A1C4A01</string>
+			<key>version</key>
+			<integer>1</integer>
+			<key>config</key>
+			<dict>
+				<key>argumenttype</key>
+				<integer>2</integer>
+				<key>keyword</key>
+				<string>{var:usage_keyword}</string>
+				<key>skipuniversalaction</key>
+				<true/>
+				<key>subtext</key>
+				<string>Spend, tokens, models, projects and your 5-hour block</string>
+				<key>text</key>
+				<string>Claude Usage</string>
+				<key>withspace</key>
+				<false/>
+			</dict>
+		</dict>
+		<dict>
+			<key>type</key>
+			<string>alfred.workflow.trigger.hotkey</string>
+			<key>uid</key>
+			<string>5C2B8E0A-3F59-4E2B-9E57-0D6B7A1C4A02</string>
+			<key>version</key>
+			<integer>2</integer>
+			<key>config</key>
+			<dict>
+				<key>action</key>
+				<integer>0</integer>
+				<key>argument</key>
+				<integer>0</integer>
+				<key>focusedappvariable</key>
+				<false/>
+				<key>focusedappvariablename</key>
+				<string></string>
+				<key>hotkey</key>
+				<integer>0</integer>
+				<key>hotmod</key>
+				<integer>0</integer>
+				<key>hotstring</key>
+				<string></string>
+				<key>leftcursor</key>
+				<false/>
+				<key>modsmode</key>
+				<integer>0</integer>
+				<key>relatedAppsMode</key>
+				<integer>0</integer>
+			</dict>
+		</dict>
+		<dict>
+			<key>type</key>
+			<string>alfred.workflow.trigger.external</string>
+			<key>uid</key>
+			<string>5C2B8E0A-3F59-4E2B-9E57-0D6B7A1C4A03</string>
+			<key>version</key>
+			<integer>1</integer>
+			<key>config</key>
+			<dict>
+				<key>availableviaurlhandler</key>
+				<false/>
+				<key>triggerid</key>
+				<string>dashboard</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>type</key>
+			<string>alfred.workflow.userinterface.alfredui</string>
+			<key>uid</key>
+			<string>5C2B8E0A-3F59-4E2B-9E57-0D6B7A1C4A04</string>
+			<key>version</key>
+			<integer>1</integer>
+			<key>config</key>
+			<dict>
+				<key>launchmode</key>
+				<integer>1</integer>
+				<key>path</key>
+				<string>claude-usage.alfredui</string>
+				<key>stackview</key>
+				<false/>
+			</dict>
+		</dict>
+	</array>
+	<key>uidata</key>
+	<dict>
+		<key>5C2B8E0A-3F59-4E2B-9E57-0D6B7A1C4A01</key>
+		<dict>
+			<key>xpos</key>
+			<real>40.0</real>
+			<key>ypos</key>
+			<real>40.0</real>
+		</dict>
+		<key>5C2B8E0A-3F59-4E2B-9E57-0D6B7A1C4A02</key>
+		<dict>
+			<key>xpos</key>
+			<real>40.0</real>
+			<key>ypos</key>
+			<real>180.0</real>
+		</dict>
+		<key>5C2B8E0A-3F59-4E2B-9E57-0D6B7A1C4A03</key>
+		<dict>
+			<key>xpos</key>
+			<real>40.0</real>
+			<key>ypos</key>
+			<real>320.0</real>
+		</dict>
+		<key>5C2B8E0A-3F59-4E2B-9E57-0D6B7A1C4A04</key>
+		<dict>
+			<key>xpos</key>
+			<real>340.0</real>
+			<key>ypos</key>
+			<real>180.0</real>
+		</dict>
+	</dict>
+	<key>userconfigurationconfig</key>
+	<array>
+		<dict>
+			<key>label</key>
+			<string>Keyword</string>
+			<key>type</key>
+			<string>textfield</string>
+			<key>variable</key>
+			<string>usage_keyword</string>
+			<key>description</key>
+			<string>Type this in Alfred to open the dashboard.</string>
+			<key>config</key>
+			<dict>
+				<key>default</key>
+				<string>claude</string>
+				<key>placeholder</key>
+				<string>claude</string>
+				<key>required</key>
+				<true/>
+				<key>trim</key>
+				<true/>
+			</dict>
+		</dict>
+	</array>
+</dict>
+</plist>
