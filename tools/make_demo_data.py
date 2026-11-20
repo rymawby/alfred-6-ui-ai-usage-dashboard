@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate synthetic Claude Code transcripts for screenshots and testing.
+"""Generate synthetic Claude, Codex and OpenCode data for screenshots and testing.
 
     python3 tools/make_demo_data.py /tmp/claude-demo
 
@@ -13,6 +13,7 @@ import json
 import math
 import os
 import random
+import sqlite3
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -80,6 +81,39 @@ def main(out, days=75, seed=11):
             write_session(pick(rnd, PROJECTS), start, int(rnd.uniform(40, 230) * ramp + 15))
     # a live session so the 5-hour block ring is active
     write_session("acme-api", now - timedelta(minutes=95), 400, model_bias=None)
+    codex = os.path.join(out, "sessions")
+    os.makedirs(codex, exist_ok=True)
+    for n in range(100):
+        project = pick(rnd, PROJECTS)
+        start = now - timedelta(days=rnd.randrange(30), hours=rnd.randrange(12))
+        model = pick(rnd, [("gpt-5.4", 0.6), ("gpt-5.3-codex", 0.3), ("gpt-5.2", 0.1)])
+        records = [{"type": "session_meta", "payload": {"id": "demo-%d" % n, "cwd": "/Users/demo/work/" + project}},
+                   {"type": "turn_context", "payload": {"model": model}}]
+        totals = {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0}
+        for i in range(rnd.randint(5, 40)):
+            totals["input_tokens"] += rnd.randint(3000, 25000)
+            totals["cached_input_tokens"] += rnd.randint(1000, 2500)
+            totals["output_tokens"] += rnd.randint(100, 2000)
+            records.append({"timestamp": (start + timedelta(minutes=i)).isoformat(), "type": "event_msg",
+                            "payload": {"type": "token_count", "info": {"total_token_usage": totals.copy()}}})
+        with open(os.path.join(codex, "demo-%d.jsonl" % n), "w") as f:
+            for record in records:
+                f.write(json.dumps(record) + "\n")
+    opencode = os.path.join(out, "opencode.db")
+    with sqlite3.connect(opencode) as db:
+        db.executescript("CREATE TABLE session (id TEXT, directory TEXT); CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT);")
+        for n in range(120):
+            sid = "oc-demo-%d" % n
+            project = pick(rnd, PROJECTS)
+            db.execute("INSERT INTO session VALUES (?,?)", (sid, "/Users/demo/work/" + project))
+            start = now - timedelta(days=rnd.randrange(30), hours=rnd.randrange(12))
+            model = pick(rnd, [("claude-sonnet-4-6", 0.5), ("gpt-5.4", 0.3), ("gemini-3.1-pro", 0.2)])
+            for i in range(rnd.randint(5, 35)):
+                tokens = {"input": rnd.randint(1000, 18000), "output": rnd.randint(100, 1500),
+                          "cache": {"read": rnd.randint(1000, 12000), "write": rnd.randint(0, 2000)}}
+                message = {"role": "assistant", "modelID": model, "providerID": "demo", "tokens": tokens}
+                timestamp = int((start + timedelta(minutes=i)).timestamp() * 1000)
+                db.execute("INSERT INTO message VALUES (?,?,?,?)", (sid + "-" + str(i), sid, timestamp, json.dumps(message)))
     print("wrote synthetic transcripts to", root)
 
 

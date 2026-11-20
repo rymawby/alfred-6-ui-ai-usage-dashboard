@@ -10,6 +10,11 @@
       "default": "cost",
       "persist": true,
       "scriptenv": true
+    },
+    "provider": {
+      "default": "claude",
+      "persist": true,
+      "scriptenv": true
     }
   },
   "pulse": {
@@ -17,7 +22,8 @@
     "args": [
       "pulse",
       "{var:range}",
-      "{var:metric}"
+      "{var:metric}",
+      "{var:provider}"
     ],
     "interval": 30,
     "intervalmode": "delay"
@@ -28,7 +34,7 @@
   },
   "window": {
     "id": "mainWindow",
-    "title": "Claude Usage",
+    "title": "AI Usage Stats",
     "blur": true,
     "size": {
       "width": 1000,
@@ -48,7 +54,7 @@
       "layout": "stack",
       "shortcuts": [
         {
-          "shortcut": "⎋",
+          "shortcut": "\u238b",
           "action": {
             "type": "function",
             "src": "mainWindow",
@@ -56,7 +62,7 @@
           }
         },
         {
-          "shortcut": "⌘W",
+          "shortcut": "\u2318W",
           "action": {
             "type": "function",
             "src": "mainWindow",
@@ -74,7 +80,8 @@
               "args": [
                 "render",
                 "{var:range}",
-                "{var:metric}"
+                "{var:metric}",
+                "{var:provider}"
               ]
             },
             {
@@ -83,7 +90,8 @@
               "args": [
                 "refresh",
                 "{var:range}",
-                "{var:metric}"
+                "{var:metric}",
+                "{var:provider}"
               ],
               "async": true
             }
@@ -99,7 +107,7 @@
           "components": [
             {
               "type": "label",
-              "text": "Loading…",
+              "text": "Loading\u2026",
               "textalign": "centre",
               "colour": "secondaryLabelColor",
               "constraints": {

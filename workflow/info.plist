@@ -5,9 +5,9 @@
 	<key>bundleid</key>
 	<string>dev.claude-usage.alfred</string>
 	<key>name</key>
-	<string>Claude Usage</string>
+	<string>AI Usage Stats</string>
 	<key>description</key>
-	<string>Your Claude Code usage as a native Alfred UI dashboard</string>
+	<string>Your Claude Code, Codex and OpenCode usage as a native Alfred UI dashboard</string>
 	<key>category</key>
 	<string>Productivity</string>
 	<key>createdby</key>
@@ -19,18 +19,23 @@
 	<key>disabled</key>
 	<false/>
 	<key>readme</key>
-	<string># Claude Usage
+	<string># AI Usage Stats
 
-A native Alfred UI dashboard for your Claude Code usage.
+A native Alfred UI dashboard for Claude Code, Codex and OpenCode usage.
 
-Type the keyword (default `claude`) to open it. It shows spend, tokens, messages,
+Type the keyword (default `usage`) to open it, then select Claude, Codex or OpenCode.
+Claude shows estimated spend, tokens, messages,
 cache efficiency, a stacked time chart by model family, model mix, your current
-5-hour block, top projects and a weekly activity heatmap.
+5-hour block, top projects and a weekly activity heatmap. Codex shows local token
+usage, model mix, sessions, projects and activity, without estimated cost or limits.
+OpenCode shows the same token statistics from its local SQLite database.
 
 ## Data
 Everything is read locally from `~/.claude/projects/**/*.jsonl` (also honours
-`CLAUDE_CONFIG_DIR`). Nothing leaves your machine. The first launch indexes
-your history once (about 15 seconds for 2 GB); after that only new bytes are read.
+`CLAUDE_CONFIG_DIR`) and Codex sessions in `~/.codex/sessions` (or `CODEX_HOME`).
+OpenCode is read from ~/.local/share/opencode/opencode.db (or OPENCODE_DB).
+Nothing leaves your machine. The first launch indexes
+your history once; later refreshes re-read changed Codex sessions and new Claude bytes.
 
 Costs are API-equivalent estimates at Anthropic list prices. If you are on a
 subscription this is the value of your usage, not what you were billed.
@@ -107,7 +112,7 @@ subscription this is the value of your usage, not what you were billed.
 				<key>subtext</key>
 				<string>Spend, tokens, models, projects and your 5-hour block</string>
 				<key>text</key>
-				<string>Claude Usage</string>
+				<string>AI Usage Stats</string>
 				<key>withspace</key>
 				<false/>
 			</dict>
@@ -221,9 +226,9 @@ subscription this is the value of your usage, not what you were billed.
 			<key>config</key>
 			<dict>
 				<key>default</key>
-				<string>claude</string>
+				<string>usage</string>
 				<key>placeholder</key>
-				<string>claude</string>
+				<string>usage</string>
 				<key>required</key>
 				<true/>
 				<key>trim</key>

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude Usage dashboard renderer for Alfred UI.
+"""AI Usage Stats dashboard renderer for Alfred UI.
 
 Usage: dashboard <render|refresh> <range: today|7d|30d|all> [metric: cost|tokens]
 
@@ -18,6 +18,10 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import engine  # noqa: E402
+import codex_engine  # noqa: E402
+import opencode_engine  # noqa: E402
+
+PROVIDER = "claude"
 
 # ---------------------------------------------------------------- palette
 ORANGE = "#D97757"
@@ -151,7 +155,7 @@ def bar(frac, colour, thickness=6):
 
 
 def script_action(*args):
-    return {"type": "script", "src": "scripts/dashboard", "args": list(args)}
+    return {"type": "script", "src": "scripts/dashboard", "args": list(args) + [PROVIDER]}
 
 
 def pill_button(text, active, action, tooltip=None, symbol_name=None, shortcut=None):
@@ -171,7 +175,7 @@ def pill_button(text, active, action, tooltip=None, symbol_name=None, shortcut=N
 
 # ---------------------------------------------------------------- data shaping
 def family_of(model):
-    return engine.model_key(model)[0]
+    return model if PROVIDER != "claude" else engine.model_key(model)[0]
 
 
 def bucketise(rows, key, now):
@@ -227,13 +231,13 @@ def bucketise(rows, key, now):
 # ---------------------------------------------------------------- sections
 def header(range_key, metric, updated, n_msgs, indexing):
     left = hstack([
-        {"type": "view", "layout": "stack", "background": ORANGE, "cornerradius": 9,
+        {"type": "view", "layout": "stack", "background": "#456BA3", "cornerradius": 9,
          "constraints": {"size": {"width": 34, "height": 34}, "insets": {"right": 10}, "position": "centre"},
-         "components": [symbol("sparkle", "White", 18, {"position": "centre"})]},
+         "components": [symbol("chart.bar.fill", "White", 18, {"position": "centre"})]},
         vstack([
-            label("Claude Usage", 20, "bold", PRIMARY),
+            label({"claude": "Claude Usage", "codex": "Codex Usage", "opencode": "OpenCode Usage"}[PROVIDER], 20, "bold", PRIMARY),
             label(("Indexing transcripts…" if indexing else
-                   "Updated %s  ·  %s API calls from Claude Code" % (updated, fmt_int(n_msgs))),
+                   "Updated %s  ·  %s usage records" % (updated, fmt_int(n_msgs))),
                   "small", "regular", SECONDARY),
         ], spacing=0),
     ], spacing=0, constraints={"region": "left"})
@@ -247,7 +251,10 @@ def header(range_key, metric, updated, n_msgs, indexing):
     refresh = {"type": "button", "bordered": False, "tooltip": "Refresh now (⌘R)", "shortcut": "⌘R", "constraints": {"position": "centre"},
                "image": {"type": "symbol", "src": "arrow.clockwise"}, "contenttintcolour": SECONDARY,
                "events": [{"triggers": "actioned", "action": script_action("refresh", range_key, metric)}]}
-    right = hstack(seg + [label("", constraints={"size": {"width": 8}})] + metric_btns + [refresh],
+    providers = [pill_button(name, PROVIDER == key, {"type": "script", "src": "scripts/dashboard", "args": ["refresh", range_key, "cost" if key == "claude" else "tokens", key]}) for key, name in (("claude", "Claude"), ("codex", "Codex"), ("opencode", "OpenCode"))]
+    if PROVIDER != "claude":
+        metric_btns = []
+    right = hstack(providers + seg + [label("", constraints={"size": {"width": 8}})] + metric_btns + [refresh],
                    spacing=4, constraints={"region": "right"})
     return {"type": "view", "layout": "border", "constraints": {"region": "top", "size": {"height": 56}, "insets": {"top": 12}},
             "components": [left, right]}
@@ -278,6 +285,11 @@ def kpi_row(cur, prev, prev_label, range_key):
         tile("Cache hit rate", "bolt.fill", PURPLE, "%.1f%%" % (cur["hit"] * 100),
              "saved about %s" % fmt_cost(cur["saved"])),
     ]
+    if PROVIDER != "claude":
+        tiles = [tile("Tokens", "textformat.123", BLUE, fmt_tokens(cur["tokens"]), "%s output" % fmt_tokens(cur["out"]), tok_d),
+                 tile("Usage records", "bubble.left.and.text.bubble.right.fill", GREEN, fmt_int(cur["msgs"]), "%s sessions" % fmt_int(cur["sessions"]), msg_d),
+                 tile("Cache hit rate", "bolt.fill", PURPLE, "%.1f%%" % (cur["hit"] * 100), "%s cached input" % fmt_tokens(cur["cr"])),
+                 tile("Active days", "calendar", ORANGE, fmt_int(cur["days"]), "in selected range")]
     return {"type": "view", "layout": "grid", "rows": 1, "cols": 4, "spacing": 12,
             "constraints": {"region": "top", "size": {"height": 104}}, "components": tiles}
 
@@ -304,9 +316,8 @@ def chart_card(rows, range_key, metric, now):
                 h = int(round(total_px * d[f][idx] / tot)) if j < len(fams) - 1 else remaining
                 h = max(h, 1)
                 remaining -= h
-                segs.append(box(FAMILY_COLOUR.get(f, GREY), constraints={"size": {"height": h}}))
-        tip = "%s\n%s  ·  %s tokens" % (title, fmt_cost(sum(v[0] for v in d.values())),
-                                       fmt_tokens(sum(v[1] for v in d.values())))
+                segs.append(box(FAMILY_COLOUR.get(f, BLUE if PROVIDER != "claude" else GREY), constraints={"size": {"height": h}}))
+        tip = "%s\n%s tokens" % (title, fmt_tokens(sum(v[1] for v in d.values()))) if PROVIDER != "claude" else "%s\n%s  ·  %s tokens" % (title, fmt_cost(sum(v[0] for v in d.values())), fmt_tokens(sum(v[1] for v in d.values())))
         if segs:
             stack = {"type": "view", "layout": "inline", "direction": "vertical", "spacing": 0,
                      "cornerradius": 3, "cliptobounds": True, "tooltip": tip,
@@ -349,7 +360,7 @@ def chart_card(rows, range_key, metric, now):
     ], spacing=0, constraints={"region": "right"})
     body = {"type": "view", "layout": "border", "spacing": 4, "components": [
         {"type": "view", "layout": "border", "constraints": {"region": "top"}, "components": [
-            dict(peak_label, constraints={"region": "left"}), legend]},
+            dict(peak_label, constraints={"region": "left"})] + ([] if PROVIDER != "claude" else [legend])},
         plot, axis]}
     title = ("Spend" if metric == "cost" else "Tokens") + " over time"
     return card(title, "chart.bar.xaxis", ORANGE, body)
@@ -358,7 +369,7 @@ def chart_card(rows, range_key, metric, now):
 def models_card(rows, metric):
     by = defaultdict(lambda: [0.0, 0])
     for r in rows:
-        a = by[engine.model_label(r.model)]
+        a = by[r.model if PROVIDER != "claude" else engine.model_label(r.model)]
         a[0] += r.cost
         a[1] += r.inp + r.out + r.cr + r.cw
     idx = 0 if metric == "cost" else 1
@@ -371,7 +382,7 @@ def models_card(rows, metric):
     out = []
     for name, v in top:
         fam = name.split()[0].lower()
-        colour = FAMILY_COLOUR.get(fam, GREY)
+        colour = FAMILY_COLOUR.get(fam, BLUE if PROVIDER != "claude" else GREY)
         share = v[idx] / total
         val = fmt_cost(v[0]) if metric == "cost" else fmt_tokens(v[1])
         out.append(vstack([
@@ -506,7 +517,7 @@ def heatmap_card(rows_all, now):
             else:
                 colour = EMPTY_CELL
             cells.append(box(colour, constraints={"insets": {"left": 1, "right": 1, "top": 1, "bottom": 1}},
-                             radius=2, tooltip="%s %02d:00  ·  %d calls" % (
+                             radius=2, tooltip="%s %02d:00  ·  %d records" % (
                                  ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][d], h, c)))
     grid = {"type": "view", "layout": "grid", "rows": 7, "cols": 24, "spacing": 0,
             "constraints": {"region": "centre"}, "components": cells}
@@ -546,7 +557,7 @@ def build_page(db, range_key, metric, indexing=False):
         {"type": "view", "layout": "grid", "rows": 1, "cols": 3, "spacing": 12,
          "constraints": {"region": "bottom", "size": {"height": 214}},
          "components": [
-             block_card(engine.current_block(db, now), now),
+             (card("Sessions", "clock", BLUE, vstack([label("%s sessions" % fmt_int(cur["sessions"]), 20, "bold", PRIMARY), label("Usage records are assistant messages." if PROVIDER == "opencode" else "Usage records are token counter updates.", "small", "regular", SECONDARY)], spacing=8, constraints={"position": "centre"})) if PROVIDER != "claude" else block_card(engine.current_block(db, now), now)),
              projects_card(rows, metric),
              heatmap_card(all_rows if range_key != "all" else all_rows, now_dt),
          ]},
@@ -555,46 +566,53 @@ def build_page(db, range_key, metric, indexing=False):
     return {"type": "view", "layout": "border", "spacing": 12, "padding": 20, "components": [
         header(range_key, metric, updated, total_msgs, indexing),
         page_body,
-        footer("Costs are API-equivalent list-price estimates from your local Claude Code transcripts  ·  "
-               "⌘1-4 range  ·  ⌘R refresh  ·  esc close"),
+        footer((("OpenCode" if PROVIDER == "opencode" else "Codex") + " token usage from local records; costs and plan limits are not shown" if PROVIDER != "claude" else "Costs are API-equivalent list-price estimates from your local Claude Code transcripts") + "  ·  ⌘1-4 range  ·  ⌘R refresh  ·  esc close"),
     ]}
 
 
 def splash(text, sub=""):
     return {"type": "view", "layout": "stack", "constraints": {"position": "centre"}, "components": [
         vstack([
-            symbol("sparkle", ORANGE, 40, {"position": "centre"}),
+            hstack([pill_button(name, PROVIDER == key, {"type": "script", "src": "scripts/dashboard", "args": ["refresh", "7d", "cost" if key == "claude" else "tokens", key]}) for key, name in (("claude", "Claude"), ("codex", "Codex"), ("opencode", "OpenCode"))], spacing=8, constraints={"position": "centre"}),
+            symbol("chart.bar.fill", BLUE, 40, {"position": "centre"}),
             label(text, 18, "bold", PRIMARY, align="centre", constraints={"insets": {"top": 10}}),
             label(sub, "default", "regular", SECONDARY, align="centre", constraints={"insets": {"top": 4}}),
+            pill_button("Refresh", False, script_action("refresh", "7d", "tokens" if PROVIDER != "claude" else "cost"), shortcut="⌘R"),
         ], spacing=0, constraints={"position": "centre"})]}
 
 
 def emit(view, range_key, metric):
     out = {
-        "variables": {"range": range_key, "metric": metric},
+        "variables": {"range": range_key, "metric": metric, "provider": PROVIDER},
         "update": {"relayout": True, "ids": {"content": {"components": [view]}}},
     }
     sys.stdout.write(json.dumps(out))
 
 
 def main():
+    global PROVIDER
+    PROVIDER = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] in ("claude", "codex", "opencode") else "claude"
+    if PROVIDER != "claude":
+        engine.DB_PATH = os.path.join(engine.DATA_DIR, PROVIDER + "-usage.sqlite")
     mode = sys.argv[1] if len(sys.argv) > 1 else "render"
     range_key = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] in dict(RANGES) else "7d"
     metric = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] in ("cost", "tokens") else "cost"
+    if PROVIDER != "claude":
+        metric = "tokens"
     try:
         db = engine.connect()
         has_data = db.execute("SELECT 1 FROM msgs LIMIT 1").fetchone() is not None
         if mode in ("refresh", "pulse"):
-            engine.index(db)
+            {"claude": engine.index, "codex": codex_engine.index, "opencode": opencode_engine.index}[PROVIDER](db)
             has_data = db.execute("SELECT 1 FROM msgs LIMIT 1").fetchone() is not None
         if not has_data:
             if mode == "render":
-                emit(splash("Indexing your Claude history…",
-                            "First run reads every transcript once. This takes about 15 seconds."),
+                emit(splash("Indexing your %s history…" % ({"claude": "Claude", "codex": "Codex", "opencode": "OpenCode"}[PROVIDER]),
+                            "First run reads local session history; this may take a while."),
                      range_key, metric)
             else:
-                emit(splash("No Claude Code usage found",
-                            "Looked in ~/.claude/projects. Use Claude Code once, then press ⌘R."),
+                emit(splash("No %s usage found" % ({"claude": "Claude Code", "codex": "Codex", "opencode": "OpenCode"}[PROVIDER]),
+                            "Use the CLI once, then press ⌘R."),
                      range_key, metric)
             return
         emit(build_page(db, range_key, metric), range_key, metric)

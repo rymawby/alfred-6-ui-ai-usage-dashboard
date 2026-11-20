@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Build the Claude Usage Alfred workflow.
+"""Build the AI Usage Stats Alfred workflow.
 
     python3 build.py          -> writes workflow/info.plist, workflow/icon.png,
-                                 and dist/Claude Usage.alfredworkflow
+                                 and dist/AI-usage-stats.alfredworkflow
 
 Double-click the .alfredworkflow to install it into Alfred 6.
 """
@@ -25,18 +25,23 @@ UID_HOTKEY = "5C2B8E0A-3F59-4E2B-9E57-0D6B7A1C4A02"
 UID_EXTERNAL = "5C2B8E0A-3F59-4E2B-9E57-0D6B7A1C4A03"
 UID_UI = "5C2B8E0A-3F59-4E2B-9E57-0D6B7A1C4A04"
 
-README = """# Claude Usage
+README = """# AI Usage Stats
 
-A native Alfred UI dashboard for your Claude Code usage.
+A native Alfred UI dashboard for Claude Code, Codex and OpenCode usage.
 
-Type the keyword (default `claude`) to open it. It shows spend, tokens, messages,
+Type the keyword (default `usage`) to open it, then select Claude, Codex or OpenCode.
+Claude shows estimated spend, tokens, messages,
 cache efficiency, a stacked time chart by model family, model mix, your current
-5-hour block, top projects and a weekly activity heatmap.
+5-hour block, top projects and a weekly activity heatmap. Codex shows local token
+usage, model mix, sessions, projects and activity, without estimated cost or limits.
+OpenCode shows the same token statistics from its local SQLite database.
 
 ## Data
 Everything is read locally from `~/.claude/projects/**/*.jsonl` (also honours
-`CLAUDE_CONFIG_DIR`). Nothing leaves your machine. The first launch indexes
-your history once (about 15 seconds for 2 GB); after that only new bytes are read.
+`CLAUDE_CONFIG_DIR`) and Codex sessions in `~/.codex/sessions` (or `CODEX_HOME`).
+OpenCode is read from ~/.local/share/opencode/opencode.db (or OPENCODE_DB).
+Nothing leaves your machine. The first launch indexes
+your history once; later refreshes re-read changed Codex sessions and new Claude bytes.
 
 Costs are API-equivalent estimates at Anthropic list prices. If you are on a
 subscription this is the value of your usage, not what you were billed.
@@ -55,9 +60,9 @@ subscription this is the value of your usage, not what you were billed.
 
 # --------------------------------------------------------------------- icon
 def make_icon(path, size=512):
-    """Terracotta rounded square with a white four-point sparkle, drawn with 3x3 supersampling."""
+    """Draw a neutral blue statistics icon with antialiased white bars."""
     SS = 3
-    top, bot = (232, 142, 108), (196, 98, 63)
+    top, bot = (75, 119, 181), (45, 68, 125)
     radius = size * 0.225
     cx = cy = size / 2.0
 
@@ -66,8 +71,11 @@ def make_icon(path, size=512):
         dy = max(abs(y - cy) - (size / 2.0 - radius), 0.0)
         return dx * dx + dy * dy <= radius * radius
 
-    def star(x, y, sx, sy, r, p=0.62):
-        return (abs(x - sx) / r) ** p + (abs(y - sy) / r) ** p <= 1.0
+    def in_bar(x, y, left, top, right, bottom):
+        radius = size * 0.035
+        cx = min(max(x, left + radius), right - radius)
+        cy = min(max(y, top + radius), bottom - radius)
+        return (x - cx) ** 2 + (y - cy) ** 2 <= radius ** 2
 
     raw = bytearray()
     for py in range(size):
@@ -80,8 +88,8 @@ def make_icon(path, size=512):
                     y = py + (sy_ + 0.5) / SS
                     if inside_round(x, y):
                         cov += 1
-                        if star(x, y, cx - size * 0.02, cy + size * 0.03, size * 0.30) or \
-                           star(x, y, cx + size * 0.215, cy - size * 0.235, size * 0.105):
+                        if any(in_bar(x, y, size * left, size * top_, size * right, size * 0.72)
+                               for left, top_, right in ((0.22, 0.49, 0.36), (0.43, 0.30, 0.57), (0.64, 0.40, 0.78))):
                             white += 1
             n = SS * SS
             t = py / float(size)
@@ -107,8 +115,8 @@ def make_plist(path):
 
     info = {
         "bundleid": BUNDLE_ID,
-        "name": "Claude Usage",
-        "description": "Your Claude Code usage as a native Alfred UI dashboard",
+        "name": "AI Usage Stats",
+        "description": "Your Claude Code, Codex and OpenCode usage as a native Alfred UI dashboard",
         "category": "Productivity",
         "createdby": "",
         "webaddress": "",
@@ -120,7 +128,7 @@ def make_plist(path):
             {"type": "alfred.workflow.input.keyword", "uid": UID_KEYWORD, "version": 1,
              "config": {"argumenttype": 2, "keyword": "{var:usage_keyword}", "skipuniversalaction": True,
                         "subtext": "Spend, tokens, models, projects and your 5-hour block",
-                        "text": "Claude Usage", "withspace": False}},
+                        "text": "AI Usage Stats", "withspace": False}},
             {"type": "alfred.workflow.trigger.hotkey", "uid": UID_HOTKEY, "version": 2,
              "config": {"action": 0, "argument": 0, "focusedappvariable": False, "focusedappvariablename": "",
                         "hotkey": 0, "hotmod": 0, "hotstring": "", "leftcursor": False, "modsmode": 0,
@@ -139,7 +147,7 @@ def make_plist(path):
         "userconfigurationconfig": [
             {"label": "Keyword", "type": "textfield", "variable": "usage_keyword",
              "description": "Type this in Alfred to open the dashboard.",
-             "config": {"default": "claude", "placeholder": "claude", "required": True, "trim": True}},
+             "config": {"default": "usage", "placeholder": "usage", "required": True, "trim": True}},
         ],
     }
     with open(path, "wb") as f:
@@ -166,10 +174,9 @@ def package(out):
 
 if __name__ == "__main__":
     icon = os.path.join(WF, "icon.png")
-    if not os.path.exists(icon):
-        make_icon(icon)
-        print("wrote", icon)
+    make_icon(icon)
+    print("wrote", icon)
     make_plist(os.path.join(WF, "info.plist"))
-    out = os.path.join(DIST, "Claude Usage.alfredworkflow")
+    out = os.path.join(DIST, "AI-usage-stats.alfredworkflow")
     package(out)
     print("built", out)
